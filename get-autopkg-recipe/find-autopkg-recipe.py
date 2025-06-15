@@ -5,6 +5,7 @@ import json
 import os
 import time
 import zipfile
+import shutil
 
 def read_csv(import_file):
     """Read CSV file and return list of dictionaries."""
@@ -51,11 +52,35 @@ def fetch_repos(endpoint):
         return repos
 
 def download_repos(repo_list, output_directory):
+    '''downloads repos as zip files and extracts them to output directory in'''
     for repo in repo_list:
         repo_name = repo['name']
         owner = repo['owner']['login']
         default_branch = repo['default_branch']
         url = f"https://github.com/{owner}/{repo_name}/archive/refs/heads/{default_branch}.zip"
+        response = requests.get(url, stream=True)
+        if response.status_code == 200:
+            zip_path = os.path.join(output_directory, f"{repo_name}.zip")
+            with open(zip_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(output_directory)
+            os.remove(zip_path)
+            print(f"Downloaded and extracted {repo_name}")
+        else:
+            print(f"Failed to download {repo_name}: HTTP {response.status_code}")
+
+            # Check rate limit headers
+            rate_limit_remaining = int(response.headers.get('x-rate-limit-remaining', 1))
+            if rate_limit_remaining <= 1:
+                current_time = int(time.time())
+                reset_time = int(response.headers.get('x-rate-limit-reset', current_time + 60))
+                sleep_duration = reset_time - current_time + 1
+                sleep_duration = max(sleep_duration, 0)
+                print(f"Rate limit approaching. Sleeping {sleep_duration} seconds")
+                time.sleep(sleep_duration)
+
 
 
 
@@ -71,15 +96,18 @@ def main():
     app_import = read_csv(input_csv)
     output_csv_location = input_csv.replace(".csv", "-with-autopkg-recipe.csv")
     output_directory_location = os.makedirs(os.path.join(output_csv_location.split("/")[0:-1],"output-recipes"), exist_ok=True) 
-    all_recipes_directory = os.makedirs("/usr/local/tmp/autopkg-recipes", exist_ok=True)
-
-
-    '''download repos and build metadata'''
-    repo_list = fetch_repos()
-    download_repos(repo_list, all_recipes_directory)
-    repo_metadata = 
-
     
+    
+    '''chooses whether or not use existing downloaded repos and cleans up if you want a refresh '''
+    if os.path.exists(all_recipes_directory):
+        use_local_repos = input("Do you want to use existing autopkg repos type y or n: ")
+    repo_list = fetch_repos()
+    if use_local_repos.lower() == 'n' or not os.path.exists(all_recipes_directory):
+        if use_local_repos.lower() and os.path.exists(all_recipes_directory)  :
+            shutil.rmtree(all_recipes_directory)
+
+        download_repos(repo_list, all_recipes_directory)
+    all_recipes_directory = os.makedirs("/usr/local/tmp/autopkg-recipes", exist_ok=True)
 
 
 if __name__ == "__main__":
