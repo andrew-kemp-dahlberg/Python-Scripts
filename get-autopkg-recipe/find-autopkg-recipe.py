@@ -6,6 +6,7 @@ import os
 import time
 import zipfile
 import shutil
+from subprocess import PIPE, STDOUT, CalledProcessError, run
 
 def read_csv(import_file):
     """Read CSV file and return list of dictionaries."""
@@ -81,11 +82,33 @@ def download_repos(repo_list, output_directory):
                 print(f"Rate limit approaching. Sleeping {sleep_duration} seconds")
                 time.sleep(sleep_duration)
 
+def build_metadata(repo_list, recipe_path):
+    """Build metadata for each repo and save to recipe_path."""
+    metadata = []
+    for repo in repo_list:
+        repo_name = repo['name']
+        owner = repo['owner']['login']
+        default_branch = repo['default_branch']
+        stars = repo['stargazers_count']
 
+        metadata.append({
+            "name": repo_name,
+            "owner": owner,
+            "default_branch": default_branch,
+            "recipe_path": os.path.join(recipe_path, f"{repo_name}.recipe"),
+            "stars": stars
+        })
+    return metadata
 
+def _run_command(shell_cmd):
+    """Function accepts argument of shell command as `shell_cmd`
+    Returns shell stderr + stdout and shell cmd exit code"""
+    raw_out = run(shell_cmd, stdout=PIPE, stderr=STDOUT, shell=True, check=True)
+    decoded_out = raw_out.stdout.decode().strip()
+    exit_code = raw_out.returncode
+    return exit_code, decoded_out
 
-
-
+def add_repos()
 
 
 def main():
