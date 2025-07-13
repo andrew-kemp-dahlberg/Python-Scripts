@@ -16,42 +16,42 @@ def read_csv(import_file):
 
 
 def fetch_repos(github_token):
-        """Download Autopkg repo and parse metadata."""
-        url = f"https://api.github.com/users/autopkg/repos"
+    """Download Autopkg repo and parse metadata."""
+    url = f"https://api.github.com/users/autopkg/repos"
 
-        payload = {}
-        headers = { 'Authorization': f'Bearer {github_token}'}
+    payload = {}
+    headers = { 'Authorization': f'Bearer {github_token}'}
 
-        response = requests.request("GET", url, headers=headers, data=payload)
-        status = response.raise_for_status()
-        repos = []
-        while url:
-            print(f"Fetching: {url}")
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                
-                rate_limit_remaining = int(response.headers.get('X-RateLimit-Remaining', 1))
-                if rate_limit_remaining <= 1:
-                    current_time = int(time.time())
-                    reset_time = int(response.headers.get('X-RateLimit-Reset', current_time + 60))
-                    sleep_duration = reset_time - current_time + 1
-                    sleep_duration = max(sleep_duration, 0)
-                    print(f"Rate limit approaching. Sleeping {sleep_duration} seconds")
-                    time.sleep(sleep_duration)
-                repos.extend(response.json())
-                
-                link_header = response.headers.get('link', '')
-                url = None
-                for link in link_header.split(','):
-                    if 'rel="next"' in link:
-                        url = link.split(';')[0].strip(' <>')
-                
-            except requests.exceptions.RequestException as e:
-                print(f"Error fetching repos: {e}")
-                break
-                
-        return repos
+    response = requests.request("GET", url, headers=headers, data=payload)
+    status = response.raise_for_status()
+    repos = []
+    while url:
+        print(f"Fetching: {url}")
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            rate_limit_remaining = int(response.headers.get('X-RateLimit-Remaining', 1))
+            if rate_limit_remaining <= 1:
+                current_time = int(time.time())
+                reset_time = int(response.headers.get('X-RateLimit-Reset', current_time + 60))
+                sleep_duration = reset_time - current_time + 1
+                sleep_duration = max(sleep_duration, 0)
+                print(f"Rate limit approaching. Sleeping {sleep_duration} seconds")
+                time.sleep(sleep_duration)
+            repos.extend(response.json())
+            
+            link_header = response.headers.get('link', '')
+            url = None
+            for link in link_header.split(','):
+                if 'rel="next"' in link:
+                    url = link.split(';')[0].strip(' <>')
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching repos: {e}")
+            break
+            
+    return repos
 
 
 def build_metadata(repo_list, recipe_path):
@@ -91,6 +91,7 @@ def _run_command(shell_cmd):
         raise CalledProcessError(result.returncode, shell_cmd, output=stdout, stderr=stderr)
     
     return result.returncode, stdout
+
 def download_repos(repo_list):
     """Download all autopkg recipe repos to a local directory."""
     for repo in repo_list:
@@ -271,15 +272,18 @@ def find_recipes(apps, repo_list, recipe_dir, output_dir):
         app_output_dir = os.path.join(output_dir, app_name.replace("/", "_").replace(" ", "_"))
         os.makedirs(app_output_dir, exist_ok=True)
 
-        
+
         # Copy the main recipe
         recipe_filename = found_recipe['name']
         # Build the actual file path using repo name and path
-        source_path = os.path.join(recipe_dir, found_recipe['repo'], found_recipe['path'])
+        source_path = os.path.join(recipe_dir, found_recipe['repo'], found_recipe['path'].strip())
         dest_path = os.path.join(app_output_dir, recipe_filename)
+        # Don't create the dest_path as a directory - it's a file path
+
         
         copied_recipes = []
         try:
+            print(f"Copying recipe from {source_path} to {dest_path}")
             _run_command(f"cp '{source_path}' '{dest_path}'")
             print(f"Copied recipe to: {dest_path}")
             copied_recipes.append(recipe_filename)
@@ -337,13 +341,9 @@ def main():
     
     load_dotenv()  # Load environment variables from .env file if present
     github_token = os.getenv("GITHUB_TOKEN")
-    if github_token:
-        # Set the token for autopkg to use
-        run(['defaults', 'write', 'com.github.autopkg', 'GITHUB_TOKEN', github_token])
-        print("GitHub token set for AutoPkg")
-    else:
-        print("WARNING: No GITHUB_TOKEN found in environment. AutoPkg searches may fail.")
 
+
+    _run_command(f"defaults read com.github.autopkg GITHUB_TOKEN \"{github_token}\"")
     input_csv = os.path.abspath(os.path.expanduser(input_csv))
     app_import = read_csv(input_csv)
     output_csv_location = input_csv.replace(".csv", "-with-autopkg-recipe.csv")
@@ -356,11 +356,6 @@ def main():
         all_recipes_directory = all_recipes_directory.strip()
     except CalledProcessError:
         all_recipes_directory = os.path.expanduser("~/Library/AutoPkg/RecipeRepos")
-
-    print(all_recipes_directory)
-    if os.path.exists(all_recipes_directory):
-        shutil.rmtree(all_recipes_directory)
-    os.makedirs(all_recipes_directory, exist_ok=True)
     
     # Fetch and process repos
     repo_list = fetch_repos(github_token)
