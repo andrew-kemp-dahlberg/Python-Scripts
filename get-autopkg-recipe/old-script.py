@@ -109,6 +109,61 @@ def search_autopkg_web(app_name: str, recipe_type: str = "") -> List[Dict[str, s
     return recipes
 
 
+def download_recipe_file(recipe_url: str, output_path: str) -> bool:
+    """
+    Download a recipe file from GitHub.
+    
+    Args:
+        recipe_url: GitHub URL to the recipe file
+        output_path: Local path to save the file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Convert GitHub blob URL to raw URL
+        # From: https://github.com/autopkg/user-recipes/blob/master/Recipe.recipe
+        # To: https://raw.githubusercontent.com/autopkg/user-recipes/master/Recipe.recipe
+        raw_url = recipe_url.replace('github.com', 'raw.githubusercontent.com')
+        raw_url = raw_url.replace('/blob/', '/')
+        
+        response = requests.get(raw_url, timeout=30)
+        response.raise_for_status()
+        
+        # Create directory if needed
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Save file
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        
+        return True
+    except Exception as e:
+        print(f"Error downloading recipe: {e}")
+        return False
+
+
+def get_parent_recipes(recipe_content: str) -> List[str]:
+    """
+    Extract parent recipe dependencies from recipe content.
+    
+    Args:
+        recipe_content: Recipe plist content
+        
+    Returns:
+        List of parent recipe identifiers
+    """
+    import re
+    
+    parents = []
+    # Look for ParentRecipe key in plist
+    parent_match = re.search(r'<key>ParentRecipe</key>\s*<string>([^<]+)</string>', recipe_content)
+    if parent_match:
+        parents.append(parent_match.group(1))
+    
+    return parents
+
+
 def find_best_recipe(app_name: str) -> Optional[Dict[str, str]]:
     """
     Find the best recipe for an application.
@@ -149,12 +204,13 @@ def find_best_recipe(app_name: str) -> Optional[Dict[str, str]]:
     return None
 
 
-def process_applications(apps: List[Dict[str, str]]) -> List[Dict[str, str]]:
+def process_applications(apps: List[Dict[str, str]], output_dir: str) -> List[Dict[str, str]]:
     """
     Process a list of applications and find recipes for each.
     
     Args:
         apps: List of dictionaries with "Application" key
+        output_dir: Directory to save recipe files
         
     Returns:
         List of results with recipe information added
@@ -187,6 +243,50 @@ def process_applications(apps: List[Dict[str, str]]) -> List[Dict[str, str]]:
                 "found": True
             })
             print(f"✓ Found {recipe['type']} recipe: {recipe['name']} (from {recipe['repo']})")
+            
+            # Create app-specific subdirectory
+            safe_app_name = app_name.replace("/", "_").replace(" ", "_").replace(":", "")
+            app_output_dir = os.path.join(output_dir, safe_app_name)
+            
+            # Download the recipe file
+            recipe_filename = recipe["recipe_file"]
+            local_recipe_path = os.path.join(app_output_dir, recipe_filename)
+            
+            print(f"  Downloading recipe to: {app_output_dir}")
+            
+            downloaded_files = []
+            if download_recipe_file(recipe["recipe_file_url"], local_recipe_path):
+                print(f"  ✓ Downloaded: {recipe_filename}")
+                downloaded_files.append(recipe_filename)
+                
+                # Check for parent recipes and download them too
+                with open(local_recipe_path, 'r', encoding='utf-8') as f:
+                    recipe_content = f.read()
+                
+                parent_recipes = get_parent_recipes(recipe_content)
+                for parent in parent_recipes:
+                    print(f"  Found parent recipe: {parent}")
+                    # Search for parent recipe
+                    parent_results = search_autopkg_web(parent, "")
+                    if parent_results:
+                        parent_recipe = parent_results[0]
+                        parent_filename = parent_recipe["recipe_file"]
+                        parent_path = os.path.join(app_output_dir, parent_filename)
+                        if download_recipe_file(parent_recipe["recipe_file_url"], parent_path):
+                            print(f"  ✓ Downloaded parent: {parent_filename}")
+                            downloaded_files.append(parent_filename)
+                    else:
+                        print(f"  ✗ Could not find parent recipe: {parent}")
+                
+                result_entry["downloaded"] = True
+                result_entry["downloaded_files"] = ", ".join(downloaded_files)
+                result_entry["local_path"] = app_output_dir
+            else:
+                result_entry["downloaded"] = False
+                result_entry["downloaded_files"] = ""
+                result_entry["local_path"] = ""
+                print(f"  ✗ Failed to download recipe")
+                
         else:
             result_entry.update({
                 "recipe_name": "Not Found",
@@ -196,7 +296,10 @@ def process_applications(apps: List[Dict[str, str]]) -> List[Dict[str, str]]:
                 "recipe_file": "N/A",
                 "recipe_file_url": "",
                 "description": "",
-                "found": False
+                "found": False,
+                "downloaded": False,
+                "downloaded_files": "",
+                "local_path": ""
             })
             print(f"✗ No recipes found")
         
@@ -217,12 +320,14 @@ def write_results_to_csv(results: List[Dict[str, str]], output_file: str):
     # Define field order (original fields first, then new fields)
     original_fields = [k for k in results[0].keys() if k not in [
         "recipe_name", "recipe_type", "repo", "repo_url", 
-        "recipe_file", "recipe_file_url", "description", "found"
+        "recipe_file", "recipe_file_url", "description", "found",
+        "downloaded", "downloaded_files", "local_path"
     ]]
     
     new_fields = [
         "recipe_name", "recipe_type", "repo", "repo_url", 
-        "recipe_file", "recipe_file_url", "description", "found"
+        "recipe_file", "recipe_file_url", "description", "found",
+        "downloaded", "downloaded_files", "local_path"
     ]
     
     fieldnames = original_fields + new_fields
@@ -240,6 +345,7 @@ def generate_summary_report(results: List[Dict[str, str]], output_file: str):
     total = len(results)
     found = sum(1 for r in results if r.get("found", False))
     not_found = total - found
+    downloaded = sum(1 for r in results if r.get("downloaded", False))
     
     munki_count = sum(1 for r in results if r.get("recipe_type") == "munki")
     download_count = sum(1 for r in results if r.get("recipe_type") == "download")
@@ -258,6 +364,7 @@ Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}
 Total Applications: {total}
 Recipes Found: {found} ({found/total*100:.1f}%)
 Not Found: {not_found} ({not_found/total*100:.1f}%)
+Successfully Downloaded: {downloaded} ({downloaded/total*100:.1f}%)
 
 Recipe Types:
 - Munki: {munki_count}
@@ -276,6 +383,13 @@ Top Repositories:
         for r in results:
             if not r.get("found", False):
                 report += f"- {r.get('Application', 'Unknown')}\n"
+    
+    # List applications with failed downloads
+    failed_downloads = [r for r in results if r.get("found", False) and not r.get("downloaded", False)]
+    if failed_downloads:
+        report += f"\nFailed downloads ({len(failed_downloads)}):\n"
+        for r in failed_downloads:
+            report += f"- {r.get('Application', 'Unknown')}\n"
     
     # Save report
     report_file = output_file.replace('.csv', '-summary.txt')
@@ -313,14 +427,19 @@ def main():
         print(f"Found columns: {', '.join(apps[0].keys())}")
         return
     
-    # Set output file path
+    # Set output paths
     output_csv = input_csv.replace(".csv", "-autopkg-recipes.csv")
+    output_dir = os.path.join(os.path.dirname(input_csv), "autopkg-recipes")
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\nRecipe files will be saved to: {output_dir}")
     
     # Process applications
     print("\nSearching for recipes...")
     print("=" * 50)
     
-    results = process_applications(apps)
+    results = process_applications(apps, output_dir)
     
     # Write results
     write_results_to_csv(results, output_csv)
@@ -339,4 +458,4 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
-        traceback.print_e
+        traceback.print_exc()
