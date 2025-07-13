@@ -71,6 +71,7 @@ def build_metadata(repo_list, recipe_path):
         })
     return metadata
 
+
 def _run_command(shell_cmd):
     result = run(shell_cmd, stdout=PIPE, stderr=PIPE, shell=True)
     
@@ -89,6 +90,11 @@ def _run_command(shell_cmd):
         raise CalledProcessError(result.returncode, shell_cmd, output=stdout, stderr=stderr)
     
     return result.returncode, stdout
+def download_repos(repo_list):
+    """Download all autopkg recipe repos to a local directory."""
+    for repo in repo_list:
+        repo_name = repo['name']
+        _run_command(f"autopkg repo-add {repo_name}")
 
 def parse_recipe_results(results):
     """Parse autopkg search results and extract recipe info"""
@@ -337,13 +343,14 @@ def main():
     os.makedirs(output_directory_location, exist_ok=True)
     
     # Always use fresh repos
-    all_recipes_directory = "/usr/local/tmp/autopkg-recipes"
+    all_recipes_directory = "~/tmp/autopkg-recipes"
     if os.path.exists(all_recipes_directory):
         shutil.rmtree(all_recipes_directory)
     os.makedirs(all_recipes_directory, exist_ok=True)
     
     # Fetch and process repos
     repo_list = fetch_repos(github_token)
+    download_repos(repo_list)
     repo_list = build_metadata(repo_list, all_recipes_directory)
     applications_result = find_recipes(app_import, repo_list, all_recipes_directory, output_directory_location)
     write_results_to_csv(applications_result, output_csv_location)
