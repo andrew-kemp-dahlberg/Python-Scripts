@@ -7,6 +7,7 @@ import time
 import shutil
 from subprocess import PIPE, STDOUT, CalledProcessError, run
 from dotenv import load_dotenv
+import glob
 
 def read_csv(import_file):
     """Read CSV file and return list of dictionaries."""
@@ -94,6 +95,7 @@ def download_repos(repo_list):
     """Download all autopkg recipe repos to a local directory."""
     for repo in repo_list:
         repo_name = repo['name']
+        print(f"Downloading repo: {repo_name}")
         _run_command(f"autopkg repo-add {repo_name}")
 
 def parse_recipe_results(results):
@@ -146,41 +148,41 @@ def is_recipe_deprecated(recipe_path):
     return False
 
 def search_and_filter_recipes(app_name, recipe_type, recipe_dir, repo_stars):
-    """
-    Search for recipes of a specific type and filter out deprecated ones.
+    """Search for recipes with flexible word matching."""
     
-    Args:
-        app_name: Name of the application to search for
-        recipe_type: Type of recipe ('munki' or 'download')
-        recipe_dir: Directory containing recipe repositories
-        repo_stars: Dictionary mapping repo names to star counts
-        
-    Returns:
-        List of non-deprecated recipes sorted by star count
-    """
-    # Create grep pattern from app name for multi-word apps
-    app_words = app_name.split()
-    grep_pattern = '.*'.join(app_words)  # "google chrome" -> "google.*chrome"
+    # Split app name into words
+    app_words = app_name.lower().split()
     
     # Search for recipes
     recipes = []
     try:
-        debug_cmd = f'autopkg search {app_name}'
-        _, raw_results = _run_command(debug_cmd)
-        print(f"Debug search command: {debug_cmd}")
-        print(f"Debug search results:\n{raw_results}")
-        cmd = f'autopkg search {app_name} | grep -iE "{grep_pattern}" | grep -i "\\.{recipe_type}\\.recipe"'
-        print(f"Running command: {cmd}")
+        # First do the autopkg search
+        cmd = f'autopkg search {app_name}'
+        _, raw_results = _run_command(cmd)
         
-        exit_code, results_str = _run_command(cmd)
-        if results_str.strip():
-            recipes = parse_recipe_results(results_str)
+        # Now filter results to ensure ALL words are present (any order)
+        # and it's the right recipe type
+        filtered_lines = []
+        for line in raw_results.split('\n'):
+            if not line.strip() or line.startswith('Name') or line.startswith('----'):
+                continue
+                
+            line_lower = line.lower()
+            # Check if ALL words from app_name are in the line
+            if all(word in line_lower for word in app_words):
+                # Check if it's the right recipe type
+                if f'.{recipe_type}.recipe' in line_lower:
+                    filtered_lines.append(line)
+        
+        # Parse the filtered results
+        for line in filtered_lines:
+            parsed = parse_recipe_results(line)
+            recipes.extend(parsed)
+            
         print(f"Found {len(recipes)} {recipe_type} recipes for '{app_name}'")
+        
     except CalledProcessError as e:
-        print(f"ERROR: Filtered search failed for '{app_name}'")
-        #print(f"Command was: {cmd}")
-        print(f"Error: {e}")
-        pass
+        print(f"ERROR: Search failed for '{app_name}': {e}")
     
     # Filter out deprecated recipes
     if recipes:
@@ -325,7 +327,9 @@ def write_results_to_csv(results, output_file):
 
 def main():
     '''Setup input and output files and create directories'''
-
+    input_csv = input("Enter the path to the input CSV file (Requires Column \"Application\"): ")
+    download_repo=input("input y to download repos, n to skip: ")
+    
     load_dotenv()  # Load environment variables from .env file if present
     github_token = os.getenv("GITHUB_TOKEN")
     if github_token:
@@ -335,7 +339,6 @@ def main():
     else:
         print("WARNING: No GITHUB_TOKEN found in environment. AutoPkg searches may fail.")
 
-    input_csv = input("Enter the path to the input CSV file (Requires Column \"Application\"): ")
     input_csv = os.path.abspath(os.path.expanduser(input_csv))
     app_import = read_csv(input_csv)
     output_csv_location = input_csv.replace(".csv", "-with-autopkg-recipe.csv")
@@ -343,14 +346,23 @@ def main():
     os.makedirs(output_directory_location, exist_ok=True)
     
     # Always use fresh repos
-    all_recipes_directory = "~/tmp/autopkg-recipes"
+    try:
+        all_recipes_directory = _run_command("defaults read com.github.autopkg RECIPE_REPO_DIR")
+    except CalledProcessError:
+        all_recipes_directory = os.path.expanduser("~/Library/AutoPkg/RecipeRepos")
+        
+    print(all_recipes_directory)
     if os.path.exists(all_recipes_directory):
         shutil.rmtree(all_recipes_directory)
     os.makedirs(all_recipes_directory, exist_ok=True)
     
     # Fetch and process repos
     repo_list = fetch_repos(github_token)
-    download_repos(repo_list)
+    if download_repo.lower() == 'y':
+        print("Downloading Autopkg repos...")
+        download_repos(repo_list)
+
+    
     repo_list = build_metadata(repo_list, all_recipes_directory)
     applications_result = find_recipes(app_import, repo_list, all_recipes_directory, output_directory_location)
     write_results_to_csv(applications_result, output_csv_location)
