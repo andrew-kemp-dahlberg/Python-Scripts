@@ -74,12 +74,13 @@ def build_metadata(repo_list, recipe_path):
 
 
 def _run_command(shell_cmd):
+    """Run a shell command and return the result."""
     result = run(shell_cmd, stdout=PIPE, stderr=PIPE, shell=True)
-    
+
     # Decode outputs
     stdout = result.stdout.decode().strip() if result.stdout else ""
     stderr = result.stderr.decode().strip() if result.stderr else ""
-    
+
     # If command failed, show details
     if result.returncode != 0:
         print(f"\nCommand failed: {shell_cmd}")
@@ -89,7 +90,7 @@ def _run_command(shell_cmd):
         if stderr:
             print(f"STDERR: {stderr}")
         raise CalledProcessError(result.returncode, shell_cmd, output=stdout, stderr=stderr)
-    
+
     return result.returncode, stdout
 
 def download_repos(repo_list):
