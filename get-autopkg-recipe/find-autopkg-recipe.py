@@ -103,17 +103,16 @@ def parse_recipe_results(results):
     recipes = []
     for line in results.split('\n'):
         if line.strip() and not line.startswith('Name') and not line.startswith('----'):
-            # autopkg search output format: "Recipe-Name    Repo-Path    Recipe-Description"
+            # autopkg search output format: "Name    Repo    Path"
             parts = line.split(None, 2)  # Split on whitespace, max 3 parts
-            if len(parts) >= 2:
+            if len(parts) >= 3:
                 recipe_name = parts[0]
-                repo_path = parts[1]
-                # Extract repo name from path like "com.github.autopkg.recipes"
-                repo_name = repo_path.split('/')[-1] if '/' in repo_path else repo_path
+                repo_name = parts[1]
+                recipe_path = parts[2]
                 recipes.append({
                     'name': recipe_name,
                     'repo': repo_name,
-                    'full_path': repo_path
+                    'path': recipe_path  # This is the relative path within the repo
                 })
     return recipes
 
@@ -147,7 +146,7 @@ def is_recipe_deprecated(recipe_path):
         pass
     return False
 
-def search_and_filter_recipes(app_name, recipe_type, recipe_dir, repo_stars):
+def search_and_filter_recipes(app_name, recipe_type, repo_stars, recipe_dir):
     """Search for recipes with flexible word matching."""
     
     # Split app name into words
@@ -184,12 +183,15 @@ def search_and_filter_recipes(app_name, recipe_type, recipe_dir, repo_stars):
     except CalledProcessError as e:
         print(f"ERROR: Search failed for '{app_name}': {e}")
     
+    
+
     # Filter out deprecated recipes
     if recipes:
         non_deprecated = []
         for recipe in recipes:
-            recipe_path = f"{recipe_dir}/{recipe['repo']}/{recipe['name']}"
-            if not is_recipe_deprecated(recipe_path) and 'deprecated' not in recipe['name'].lower():
+            # Build full path for deprecation check
+            full_recipe_path = os.path.join(recipe_dir, recipe['repo'], recipe['path'])
+            if not is_recipe_deprecated(full_recipe_path) and 'deprecated' not in recipe['name'].lower():
                 non_deprecated.append(recipe)
         if non_deprecated:
             recipes = non_deprecated
@@ -218,12 +220,12 @@ def find_recipes(apps, repo_list, recipe_dir, output_dir):
         app_name = app["Application"]
         
         # Search for munki recipes first
-        munki_recipes = search_and_filter_recipes(app_name, 'munki', recipe_dir, repo_stars)
+        munki_recipes = search_and_filter_recipes(app_name, 'munki', repo_stars, recipe_dir)
         
         # Only search for download recipes if no munki recipes found
         download_recipes = []
         if not munki_recipes:
-            download_recipes = search_and_filter_recipes(app_name, 'download', recipe_dir, repo_stars)
+            download_recipes = search_and_filter_recipes(app_name, 'download', repo_stars, recipe_dir)
         
         # Create result entry starting with original app data
         result_entry = app.copy()
@@ -268,11 +270,13 @@ def find_recipes(apps, repo_list, recipe_dir, output_dir):
         # Create app-specific subdirectory in output
         app_output_dir = os.path.join(output_dir, app_name.replace("/", "_").replace(" ", "_"))
         os.makedirs(app_output_dir, exist_ok=True)
+
         
         # Copy the main recipe
         recipe_filename = found_recipe['name']
-        source_path = f"{recipe_dir}/{repo_name}/{recipe_filename}"
-        dest_path = f"{app_output_dir}/{recipe_filename}"
+        # Build the actual file path using repo name and path
+        source_path = os.path.join(recipe_dir, found_recipe['repo'], found_recipe['path'])
+        dest_path = os.path.join(app_output_dir, recipe_filename)
         
         copied_recipes = []
         try:
@@ -283,9 +287,10 @@ def find_recipes(apps, repo_list, recipe_dir, output_dir):
             # Check for dependencies and copy them too
             dependencies = get_recipe_dependencies(source_path)
             for dep in dependencies:
-                # Find the dependency recipe
-                dep_source = f"{recipe_dir}/{repo_name}/{dep}"
-                dep_dest = f"{app_output_dir}/{dep}"
+                # For dependencies, we need to look in the same directory as the parent recipe
+                recipe_directory = os.path.dirname(found_recipe['path'])
+                dep_source = os.path.join(recipe_dir, repo_name, recipe_directory, dep)
+                dep_dest = os.path.join(app_output_dir, dep)
                 
                 # Check if dependency exists and is not deprecated
                 if os.path.exists(dep_source) and not is_recipe_deprecated(dep_source):
@@ -347,10 +352,11 @@ def main():
     
     # Always use fresh repos
     try:
-        all_recipes_directory = _run_command("defaults read com.github.autopkg RECIPE_REPO_DIR")
+        _, all_recipes_directory = _run_command("defaults read com.github.autopkg RECIPE_REPO_DIR")
+        all_recipes_directory = all_recipes_directory.strip()
     except CalledProcessError:
         all_recipes_directory = os.path.expanduser("~/Library/AutoPkg/RecipeRepos")
-        
+
     print(all_recipes_directory)
     if os.path.exists(all_recipes_directory):
         shutil.rmtree(all_recipes_directory)
