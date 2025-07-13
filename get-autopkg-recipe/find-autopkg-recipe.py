@@ -348,6 +348,64 @@ class AutoPkgRecipeFinder:
             "success_rate": self.stats["found"] / self.stats["total"] * 100 if self.stats["total"] > 0 else 0,
             "download_rate": self.stats["downloaded"] / self.stats["found"] * 100 if self.stats["found"] > 0 else 0
         }
+    
+class EnhancedOnboardingSystem:
+    def __init__(self):
+        self.perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
+        self.recipe_output_dir = Path("/opt/onboarding/autopkg-recipes")
+    
+    def onboard_user_applications(self, user_id: str, required_apps: List[str]):
+        """Complete application recipe workflow with last mile handling."""
+        
+        # Step 1: Try standard AutoPkg recipes first
+        applications = [{"Application": app} for app in required_apps]
+        
+        autopkg_results = process_user_applications(
+            applications=applications,
+            output_dir=self.recipe_output_dir,
+            logger=self.logger
+        )
+        
+        # Step 2: Identify apps without recipes
+        apps_without_recipes = [
+            result for result in autopkg_results["results"]
+            if not result.get("found") or result["recipe_name"] == "Not Found"
+        ]
+        
+        self.logger.info(f"Found {len(apps_without_recipes)} apps needing last mile processing")
+        
+        # Step 3: Process through Perplexity + Recipe Robot
+        if apps_without_recipes and self.perplexity_api_key:
+            last_mile_results = process_last_mile_apps(
+                apps_without_recipes=apps_without_recipes,
+                output_dir=self.recipe_output_dir,
+                perplexity_api_key=self.perplexity_api_key,
+                logger=self.logger
+            )
+            
+            # Update original results
+            for updated in last_mile_results:
+                for i, original in enumerate(autopkg_results["results"]):
+                    if original["Application"] == updated["Application"]:
+                        autopkg_results["results"][i] = updated
+                        break
+        
+        # Step 4: Generate final report
+        total_apps = len(applications)
+        found_standard = sum(1 for r in autopkg_results["results"] 
+                           if r.get("found") and not r.get("last_mile_processed"))
+        found_last_mile = sum(1 for r in autopkg_results["results"] 
+                            if r.get("last_mile_success"))
+        
+        self.logger.info(f"""
+        User {user_id} Application Setup Complete:
+        - Total applications: {total_apps}
+        - Found in AutoPkg: {found_standard}
+        - Created via Recipe Robot: {found_last_mile}
+        - Failed: {total_apps - found_standard - found_last_mile}
+        """)
+        
+        return autopkg_results["results"]
 
 
 def main(input_csv_path: Optional[str] = None):
